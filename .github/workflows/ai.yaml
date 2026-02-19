@@ -1,0 +1,70 @@
+name: Deploy models and create agent
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Load ENV secret
+        shell: bash
+        run: |
+          echo "${{ secrets.ENV }}" > .env
+          while IFS= read -r line || [[ -n "$line" ]]; do
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            echo "$line" >> "$GITHUB_ENV"
+          done < .env
+
+          grep -q '^MODEL_DEPLOYMENT_NAME=' .env \
+            || echo "MODEL_DEPLOYMENT_NAME=gpt-4o" >> "$GITHUB_ENV"
+          grep -q '^EMBEDDING_MODEL_DEPLOYMENT_NAME=' .env \
+            || echo "EMBEDDING_MODEL_DEPLOYMENT_NAME=text-embedding-ada-002" >> "$GITHUB_ENV"
+
+      - name: Deploy gpt-4o
+        run: |
+          az cognitiveservices account deployment create \
+            -g "$FOUNDRY_RESOURCE_GROUP" \
+            -n "$FOUNDRY_RESOURCE_NAME" \
+            --deployment-name "$MODEL_DEPLOYMENT_NAME" \
+            --model-name "gpt-4o" \
+            --model-version "2024-08-06" \
+            --model-format "OpenAI" \
+            --sku-name "GlobalStandard" \
+            --sku-capacity 1 \
+          || echo "Chat deployment may already exist; continuing"
+
+      - name: Deploy text-embedding-ada-002
+        run: |
+          az cognitiveservices account deployment create \
+            -g "$FOUNDRY_RESOURCE_GROUP" \
+            -n "$FOUNDRY_RESOURCE_NAME" \
+            --deployment-name "$EMBEDDING_MODEL_DEPLOYMENT_NAME" \
+            --model-name "text-embedding-ada-002" \
+            --model-version "2" \
+            --model-format "OpenAI" \
+            --sku-name "Standard" \
+            --sku-capacity 1 \
+          || echo "Embedding deployment may already exist; continuing"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install azure-identity azure-ai-projects azure-ai-agents
+
+      - name: Create Foundry agent
+        run: python create_agent.py
